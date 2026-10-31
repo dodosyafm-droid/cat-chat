@@ -1,0 +1,18 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "хвост.moc3",
+		"Textures": [
+			"хвост.1024/texture_00.png",
+			"хвост.1024/texture_01.png"
+		],
+		"DisplayInfo": "хвост.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		}
+	]
+}
