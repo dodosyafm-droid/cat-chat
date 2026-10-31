@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Live2D: проверка модели</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+    html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: system-ui, "Segoe UI", sans-serif;
+        color: #eee;
+        background: #2b2b33;
+    }
+    body.bg-dark  { background: #15151b; }
+    body.bg-light { background: #e9e9ef; }
+    body.bg-check {
+        background-color: #bbb;
+        background-image:
+            linear-gradient(45deg, #888 25%, transparent 25%, transparent 75%, #888 75%),
+            linear-gradient(45deg, #888 25%, transparent 25%, transparent 75%, #888 75%);
+        background-size: 24px 24px;
+        background-position: 0 0, 12px 12px;
+    }
+    #stage { position: absolute; inset: 0; }
+    canvas { display: block; }
+
+    #panel {
+        position: absolute; top: 0; right: 0;
+        width: 360px; max-height: 100%; overflow: auto;
+        box-sizing: border-box; padding: 10px;
+        background: rgba(18, 18, 26, 0.94);
+        font-size: 12px; z-index: 5;
+    }
+    #panel h3 { margin: 12px 0 6px; font-size: 13px; color: #f3c46b; }
+    #panel button {
+        margin: 2px 2px 2px 0; padding: 4px 8px; cursor: pointer;
+        background: #3a3a4d; color: #eee; border: 1px solid #555; border-radius: 4px;
+    }
+    #panel button:hover { background: #4b4b64; }
+
+    #log { white-space: pre-wrap; line-height: 1.4; }
+    #log .err { color: #ff8a8a; }
+    #log .ok  { color: #8aff9d; }
+
+    .param { margin: 4px 0; }
+    .param label { display: flex; align-items: center; gap: 6px; }
+    .param .name { flex: 1; word-break: break-all; }
+    .param input[type=range] { width: 100%; }
+</style>
+</head>
+<body class="bg-check">
+
+<div id="stage"></div>
+
+<div id="panel">
+    <h3>Состояние</h3>
+    <div id="log"></div>
+
+    <h3>Фон просмотра</h3>
+    <button data-bg="bg-check">Шахматка (прозрачность)</button>
+    <button data-bg="bg-dark">Тёмный</button>
+    <button data-bg="bg-light">Светлый</button>
+
+    <h3>Масштаб и положение</h3>
+    <input id="scale" type="range" min="0.05" max="3" step="0.01" value="1" style="width:100%">
+    <div>Перетаскивай кота мышкой по экрану.</div>
+
+    <h3>Движения (из файла модели)</h3>
+    <div id="motions">загрузка…</div>
+
+    <h3>Выражения</h3>
+    <div id="expressions">нет</div>
+
+    <h3>Поведение кота (как будет в чате)</h3>
+    <label><input id="auto" type="checkbox" checked> автоповедение (хвост, глаза, ухо, лапа)</label>
+    <div>Настроение чата: тихо ← → оживлённо</div>
+    <input id="mood" type="range" min="0" max="1" step="0.01" value="0.6" style="width:100%">
+    <button id="b-blink">Моргнуть</button>
+    <button id="b-ear">Дёрнуть ухом</button>
+    <button id="b-paw">Помахать лапой</button>
+    <button id="b-msg">Новое сообщение</button>
+    <label><input id="builtin" type="checkbox"> включить встроенные «дыхание» и автоморгание библиотеки (для проверки)</label>
+
+    <h3>Параметры</h3>
+    <button id="copy">Скопировать список параметров</button>
+    <div>Отметь галочкой, чтобы управлять параметром вручную.</div>
+    <div id="params"></div>
+</div>
+
+<!-- Cubism Core: файл из Cubism SDK for Web (папка Core), положи рядом с этой страницей -->
+<script src="./live2dcubismcore.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.2/dist/browser/pixi.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+
+<script>
+/* ---------- вывод сообщений на экран ---------- */
+const logBox = document.getElementById('log');
+
+function log(message, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = message;
+    logBox.appendChild(line);
+}
+
+window.addEventListener('error', e => log('Ошибка: ' + e.message, 'err'));
+window.addEventListener('unhandledrejection', e => {
+    const r = e.reason;
+    log('Ошибка: ' + (r && r.message ? r.message : r), 'err');
+});
+
+/* ---------- настройки ---------- */
+const query = new URLSearchParams(location.search);
+const MODEL_URL = query.get('model') || 'model/cat.model3.json';
+
+/* ---------- фон ---------- */
+document.querySelectorAll('[data-bg]').forEach(button => {
+    button.addEventListener('click', () => {
+        document.body.className = button.dataset.bg;
+    });
+});
+
+/* ---------- основной код ---------- */
+async function main() {
+
+    if (!window.Live2DCubismCore) {
+        log('Не найден файл live2dcubismcore.min.js рядом со страницей. Скачай его из Cubism SDK for Web (папка Core) и положи в ту же папку, что index.html.', 'err');
+        return;
+    }
+
+    if (!window.PIXI || !PIXI.live2d) {
+        log('Не загрузились библиотеки Pixi / Live2D (нет интернета или адрес недоступен).', 'err');
+        return;
+    }
+
+    log('Библиотеки загружены.', 'ok');
+    log('Загружаю модель: ' + MODEL_URL);
+
+    const app = new PIXI.Application({
+        resizeTo: window,
+        backgroundAlpha: 0,
+        antialias: true,
+        autoDensity: true,
+        resolution: window.devicePixelRatio || 1
+    });
+
+    document.getElementById('stage').appendChild(app.view);
+
+    try {
+        PIXI.live2d.Live2DModel.registerTicker(PIXI.Ticker);
+    } catch (e) {
+        log('registerTicker: ' + e.message);
+    }
+
+    const model = await PIXI.live2d.Live2DModel.from(MODEL_URL, { autoInteract: false });
+
+    log('Модель загружена.', 'ok');
+
+    app.stage.addChild(model);
+
+    /* вписываем модель в окно */
+    model.anchor.set(0.5, 0.5);
+
+    const fit = Math.min(
+        (app.screen.width - 380) * 0.9 / model.width,
+        app.screen.height * 0.9 / model.height
+    );
+
+    model.scale.set(fit);
+    model.x = (app.screen.width - 360) / 2;
+    model.y = app.screen.height / 2;
+
+    const scaleInput = document.getElementById('scale');
+    scaleInput.value = fit;
+    scaleInput.addEventListener('input', () => model.scale.set(parseFloat(scaleInput.value)));
+
+    /* перетаскивание */
+    let drag = null;
+
+    app.view.addEventListener('pointerdown', e => {
+        drag = { x: e.clientX - model.x, y: e.clientY - model.y };
+    });
+
+    window.addEventListener('pointermove', e => {
+        if (!drag) return;
+        model.x = e.clientX - drag.x;
+        model.y = e.clientY - drag.y;
+    });
+
+    window.addEventListener('pointerup', () => { drag = null; });
+
+    /* ---------- параметры ---------- */
+    const core = model.internalModel.coreModel;
+    const raw = core.getModel ? core.getModel() : core._model;
+    const P = raw.parameters;
+
+    log('Параметров: ' + P.count + ', частей: ' + (raw.parts ? raw.parts.count : '?'), 'ok');
+
+    const overrides = {};
+    const paramsBox = document.getElementById('params');
+    const exportList = [];
+
+    for (let i = 0; i < P.count; i++) {
+
+        const id = P.ids[i];
+        const min = P.minimumValues[i];
+        const max = P.maximumValues[i];
+        const def = P.defaultValues[i];
+
+        exportList.push({ id: id, min: min, max: max, default: def });
+
+        const wrap = document.createElement('div');
+        wrap.className = 'param';
+
+        const label = document.createElement('label');
+
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = id + '  [' + min + ' … ' + max + ']';
+
+        label.appendChild(check);
+        label.appendChild(name);
+
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = min;
+        slider.max = max;
+        slider.step = (max - min) / 200 || 0.01;
+        slider.value = def;
+
+        check.addEventListener('change', () => {
+            if (check.checked) overrides[i] = parseFloat(slider.value);
+            else delete overrides[i];
+        });
+
+        slider.addEventListener('input', () => {
+            if (check.checked) overrides[i] = parseFloat(slider.value);
+        });
+
+        wrap.appendChild(label);
+        wrap.appendChild(slider);
+        paramsBox.appendChild(wrap);
+
+    }
+
+    /* ---------- встроенные «дыхание» и автоморгание библиотеки ----------
+       Они двигают ParamAngleX/Y и глаза, а у тебя эти параметры отданы под хвост и лапу,
+       поэтому по умолчанию выключаем. */
+    const internal = model.internalModel;
+    const builtin = { breath: internal.breath, eyeBlink: internal.eyeBlink, natural: internal.updateNaturalMovements };
+
+    const setBuiltin = enabled => {
+        try {
+            internal.breath = enabled ? builtin.breath : undefined;
+            internal.eyeBlink = enabled ? builtin.eyeBlink : undefined;
+            internal.updateNaturalMovements = enabled ? builtin.natural : function () {};
+        } catch (e) {
+            log('Не удалось переключить встроенные эффекты: ' + e.message, 'err');
+        }
+    };
+
+    setBuiltin(false);
+    log('Встроенные «дыхание» и автоморгание выключены (хвост и лапа не будут качаться сами по себе).', 'ok');
+
+    document.getElementById('builtin').addEventListener('change', e => setBuiltin(e.target.checked));
+
+    /* ---------- поведение кота ---------- */
+
+    /* ID параметров твоей модели. Если какой-то не найдётся, будет красное сообщение. */
+    const MAP = {
+        eyeL: 'ParamEyeLOpen',
+        eyeR: 'ParamEyeROpen',
+        tail: 'ParamAngleX',
+        ears: 'ParamBrowLForm',
+        paw:  'ParamAngleY'
+    };
+
+    const idList = Array.from(P.ids);
+    const idx = {};
+
+    Object.keys(MAP).forEach(key => {
+        idx[key] = idList.indexOf(MAP[key]);
+        if (idx[key] < 0) {
+            log('Не найден параметр ' + MAP[key] + ' (' + key + '). Поправь MAP в коде страницы.', 'err');
+        }
+    });
+
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const clamp01 = v => Math.max(0, Math.min(1, v));
+    const rng = key => ({ min: P.minimumValues[idx[key]], max: P.maximumValues[idx[key]], def: P.defaultValues[idx[key]] });
+    const setParam = (key, value) => { if (idx[key] >= 0) core.setParameterValueByIndex(idx[key], value); };
+
+    const beh = {
+        auto: true,
+        mood: 0.6,           /* 0 тихо ... 1 оживлённо */
+        last: performance.now(),
+        tailPhase: 0,
+        base: 1,             /* насколько открыты глаза в покое */
+        blinkStart: -1e9,
+        blinkDur: 200,
+        nextBlink: performance.now() + 1500,
+        earStart: -1e9,
+        nextEar: performance.now() + 4000,
+        pawStart: -1e9,
+        nextPaw: performance.now() + 9000
+    };
+
+    const blinkNow = () => {
+        beh.blinkStart = performance.now();
+        beh.blinkDur = lerp(520, 160, beh.mood);
+    };
+    const earNow = () => { beh.earStart = performance.now(); };
+    const pawNow = () => { beh.pawStart = performance.now(); };
+
+    document.getElementById('auto').addEventListener('change', e => { beh.auto = e.target.checked; });
+    document.getElementById('mood').addEventListener('input', e => { beh.mood = parseFloat(e.target.value); });
+    document.getElementById('b-blink').addEventListener('click', blinkNow);
+    document.getElementById('b-ear').addEventListener('click', earNow);
+    document.getElementById('b-paw').addEventListener('click', pawNow);
+    document.getElementById('b-msg').addEventListener('click', () => { earNow(); setTimeout(pawNow, 250); });
+
+    const behave = now => {
+
+        const dt = Math.min(0.1, (now - beh.last) / 1000);
+
+        beh.last = now;
+
+        const mood = beh.mood;
+
+        /* хвост: чем оживлённее чат, тем быстрее и шире машет */
+        if (idx.tail >= 0) {
+            const r = rng('tail');
+            const amp = (r.max - r.min) / 2 * lerp(0.18, 0.7, mood);
+            beh.tailPhase += dt * lerp(1.1, 5.0, mood);
+            setParam('tail', r.def + amp * Math.sin(beh.tailPhase));
+        }
+
+        /* глаза: в тишине закрываются, в оживлённом чате почти не моргают */
+        const target = clamp01((mood - 0.05) / 0.5);
+        beh.base += (target - beh.base) * Math.min(1, dt * 2.5);
+
+        if (now >= beh.nextBlink && beh.base > 0.3) {
+            blinkNow();
+            beh.nextBlink = now + lerp(2200, 7000, mood) * (0.7 + Math.random() * 0.6);
+        } else if (now >= beh.nextBlink) {
+            beh.nextBlink = now + 1000;
+        }
+
+        let blink = 0;
+        const bp = (now - beh.blinkStart) / beh.blinkDur;
+
+        if (bp >= 0 && bp <= 1) blink = Math.sin(Math.PI * bp);
+
+        const open = beh.base * (1 - blink);
+
+        ['eyeL', 'eyeR'].forEach(key => {
+            if (idx[key] >= 0) {
+                const r = rng(key);
+                setParam(key, lerp(r.min, r.max, open));
+            }
+        });
+
+        /* ухо и волоски: лёгкое колыхание + редкие подёргивания */
+        if (idx.ears >= 0) {
+            const r = rng('ears');
+            let v = r.def + (r.max - r.min) * 0.05 * Math.sin(now / 1500);
+
+            if (now >= beh.nextEar) {
+                earNow();
+                beh.nextEar = now + lerp(9000, 3500, mood) * (0.6 + Math.random() * 0.8);
+            }
+
+            const ep = (now - beh.earStart) / 280;
+
+            if (ep >= 0 && ep <= 1) v += (r.max - r.def) * 0.9 * Math.sin(Math.PI * ep);
+
+            setParam('ears', v);
+        }
+
+        /* лапа: тихое покачивание + взмахи */
+        if (idx.paw >= 0) {
+            const r = rng('paw');
+            let v = r.def + (r.max - r.min) * 0.03 * Math.sin(now / 2200);
+
+            if (now >= beh.nextPaw) {
+                pawNow();
+                beh.nextPaw = now + lerp(22000, 9000, mood) * (0.7 + Math.random() * 0.6);
+            }
+
+            const pp = (now - beh.pawStart) / 1400;
+
+            if (pp >= 0 && pp <= 1) v += (r.max - r.min) * 0.35 * Math.sin(2 * Math.PI * 3 * pp) * (1 - pp);
+
+            setParam('paw', v);
+        }
+
+    };
+
+    /* значения применяются после движений и физики, перед отрисовкой.
+       Ползунки справа стоят последними, поэтому ручной выбор побеждает автоповедение. */
+    const frame = () => {
+
+        if (beh.auto) behave(performance.now());
+
+        for (const key in overrides) {
+            core.setParameterValueByIndex(Number(key), overrides[key]);
+        }
+
+    };
+
+    if (model.internalModel.on) {
+        model.internalModel.on('beforeModelUpdate', frame);
+    } else {
+        app.ticker.add(frame);
+    }
+
+    document.getElementById('copy').addEventListener('click', async () => {
+        const text = JSON.stringify(exportList, null, 1);
+        try {
+            await navigator.clipboard.writeText(text);
+            log('Список параметров скопирован. Вставь его в чат.', 'ok');
+        } catch (e) {
+            console.log(text);
+            log('Не удалось скопировать автоматически. Список выведен в консоль браузера (F12).', 'err');
+        }
+    });
+
+    /* ---------- движения ---------- */
+    const motionsBox = document.getElementById('motions');
+    motionsBox.textContent = '';
+
+    try {
+
+        const defs = model.internalModel.motionManager.definitions || {};
+        let any = false;
+
+        Object.keys(defs).forEach(group => {
+            (defs[group] || []).forEach((item, index) => {
+
+                any = true;
+
+                const button = document.createElement('button');
+                const file = item.File || item.file || '';
+
+                button.textContent = (group || '(без группы)') + ' #' + index +
+                    (file ? '  ' + file.split('/').pop() : '');
+
+                button.addEventListener('click', () => model.motion(group, index));
+
+                motionsBox.appendChild(button);
+
+            });
+        });
+
+        if (!any) motionsBox.textContent = 'в model3.json нет движений';
+
+    } catch (e) {
+        motionsBox.textContent = 'не удалось прочитать движения: ' + e.message;
+    }
+
+    /* ---------- выражения ---------- */
+    try {
+
+        const expr = model.internalModel.motionManager.expressionManager;
+        const box = document.getElementById('expressions');
+
+        if (expr && expr.definitions && expr.definitions.length) {
+
+            box.textContent = '';
+
+            expr.definitions.forEach((item, index) => {
+                const button = document.createElement('button');
+                button.textContent = item.Name || item.name || ('#' + index);
+                button.addEventListener('click', () => model.expression(index));
+                box.appendChild(button);
+            });
+
+        }
+
+    } catch (e) { /* выражений нет */ }
+
+}
+
+main().catch(e => {
+    log('Не удалось загрузить модель: ' + (e && e.message ? e.message : e), 'err');
+    log('Проверь адрес модели в ссылке (?model=...) и что все файлы модели лежат на месте.', 'err');
+});
+</script>
+</body>
+</html>
