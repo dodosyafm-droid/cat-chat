@@ -1,0 +1,16 @@
+{
+  "name": "cat-chat",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "easy-live2d": "^0.4.3",
+    "pixi.js": "8.17.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}
