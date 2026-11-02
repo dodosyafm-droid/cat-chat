@@ -3,8 +3,8 @@
 	"FileReferences": {
 		"Moc": "cat.moc3",
 		"Textures": [
-			"cat.1024/texture_00.png",
-			"cat.1024/texture_01.png"
+			"texture_00.png",
+			"texture_01.png"
 		],
 		"DisplayInfo": "cat.cdi3.json"
 	},
