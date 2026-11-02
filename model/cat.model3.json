@@ -4,7 +4,7 @@
 		"Moc": "cat.moc3",
 		"Textures": [
 			"texture_00.png",
-			"texture_00.png"
+			"texture_01.png"
 		],
 		"DisplayInfo": "cat.cdi3.json"
 	},
