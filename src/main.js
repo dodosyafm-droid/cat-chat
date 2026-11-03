@@ -11,6 +11,10 @@ const DEBUG = query.get('debug') === '1';
 const MODEL_URL = query.get('model') || './model/cat.model3.json';
 const FIXED_MOOD = query.has('mood') ? parseFloat(query.get('mood')) : null;
 const FULL_RATE = parseFloat(query.get('full')) > 0 ? parseFloat(query.get('full')) : 8;
+/* ?gaze=1      как часто кот смотрит на чат (1 = обычно, 2 = вдвое чаще, 0.5 = вдвое реже, 0 = не смотрит)
+   ?gazeTo=min  в какую сторону параметра ParamEyeBallX глаза смотрят на чат (min или max) */
+const GAZE = query.has('gaze') && Number.isFinite(parseFloat(query.get('gaze'))) ? Math.max(0, parseFloat(query.get('gaze'))) : 1;
+const GAZE_TO = query.get('gazeTo') === 'max' ? 1 : -1;
 
 if (DEBUG) document.body.classList.add('debug', 'bg-check');
 
@@ -165,7 +169,8 @@ async function main() {
         eyeR: 'ParamEyeROpen',
         tail: 'ParamAngleX',
         ears: 'ParamBrowLForm',
-        paw:  'ParamAngleY'
+        paw:  'ParamAngleY',
+        gazeX: 'ParamEyeBallX'
     };
 
     /* если диапазон параметра не удалось прочитать из модели, берём такой */
@@ -174,7 +179,8 @@ async function main() {
         eyeR: { min: 0,   max: 1,  def: 1 },
         tail: { min: -30, max: 30, def: 0 },
         ears: { min: -1,  max: 1,  def: 0 },
-        paw:  { min: -30, max: 30, def: 0 }
+        paw:  { min: -30, max: 30, def: 0 },
+        gazeX: { min: -1, max: 1, def: 0 }
     };
 
     const ranges = {};
@@ -222,6 +228,11 @@ async function main() {
         pawStart: -1e9,
         nextPaw: performance.now() + 9000,
         lastPawAt: -1e9,
+        gaze: 0,
+        gazeTarget: 0,
+        gazeUntil: 0,
+        nextGaze: performance.now() + 8000,
+        lastGazeEnd: -1e9,
         droop: 0,
         pawPhase: 0
     };
@@ -232,6 +243,23 @@ async function main() {
     const earNow = () => { beh.earStart = performance.now(); };
     const pawNow = () => { beh.pawStart = performance.now(); beh.lastPawAt = performance.now(); };
 
+    /* взгляд на чат: в оживлённом чате кот время от времени переводит глаза на панель */
+    const GAZE_MIN_MOOD = 0.45;
+    const gazeInterval = mood => lerp(55000, 18000, mood) * (0.7 + Math.random() * 0.6) / Math.max(GAZE, 0.01);
+
+    const startGaze = now => {
+        beh.gazeTarget = 1;
+        beh.gazeUntil = now + 2000 + Math.random() * 2200;
+        if (Math.random() < 0.5) blinkNow();
+    };
+
+    const endGaze = now => {
+        beh.gazeTarget = 0;
+        beh.lastGazeEnd = now;
+        beh.nextGaze = now + gazeInterval(beh.mood);
+        if (Math.random() < 0.5) setTimeout(blinkNow, 250);
+    };
+
     /* новое сообщение в чате */
     const onMessage = (force) => {
         const now = performance.now();
@@ -239,6 +267,11 @@ async function main() {
         if (force || Math.random() < 0.5) earNow();
         if (force) setTimeout(pawNow, 250);
         else if (Math.random() < 0.15 && now - beh.lastPawAt > 8000) setTimeout(pawNow, 250);
+
+        /* иногда кот реагирует взглядом на само сообщение */
+        if (!force && GAZE > 0 && beh.mood >= 0.5 && !beh.gazeTarget && now - beh.lastGazeEnd > 10000 && Math.random() < 0.08) {
+            startGaze(now);
+        }
     };
 
     const behave = now => {
@@ -284,6 +317,22 @@ async function main() {
             const r = ranges[key];
             setKey(key, lerp(r.min, r.max, open));
         });
+
+        /* взгляд на чат: только в оживлённом чате и только когда кот не спит */
+        {
+            const r = ranges.gazeX;
+            const awake = beh.base > 0.6;
+
+            if (mood < GAZE_MIN_MOOD) beh.nextGaze = Math.max(beh.nextGaze, now + 3000);
+
+            if (GAZE > 0 && !beh.gazeTarget && awake && mood >= GAZE_MIN_MOOD && now >= beh.nextGaze) startGaze(now);
+            if (beh.gazeTarget && (now >= beh.gazeUntil || !awake || GAZE <= 0)) endGaze(now);
+
+            beh.gaze += (beh.gazeTarget - beh.gaze) * Math.min(1, dt * (beh.gazeTarget ? 6 : 4));
+
+            const end = GAZE_TO > 0 ? r.max : r.min;
+            setKey('gazeX', r.def + (end - r.def) * beh.gaze);
+        }
 
         /* уши: во сне отпускаются (ParamBrowLForm = EAR_DROOP), при пробуждении возвращаются в норму */
         {
@@ -383,9 +432,10 @@ async function main() {
         else if (d.type === 'blink') blinkNow();
         else if (d.type === 'ear') earNow();
         else if (d.type === 'paw') pawNow();
+        else if (d.type === 'gaze') startGaze(performance.now());
     });
 
-    window.cat = { message: () => onMessage(true), blink: blinkNow, ear: earNow, paw: pawNow, beh };
+    window.cat = { message: () => onMessage(true), blink: blinkNow, ear: earNow, paw: pawNow, gaze: () => startGaze(performance.now()), beh };
 
     /* ---------- панель проверки ---------- */
     if (DEBUG) {
@@ -402,12 +452,13 @@ async function main() {
         document.getElementById('b-blink').addEventListener('click', blinkNow);
         document.getElementById('b-ear').addEventListener('click', earNow);
         document.getElementById('b-paw').addEventListener('click', pawNow);
+        document.getElementById('b-gaze').addEventListener('click', () => startGaze(performance.now()));
         document.getElementById('b-msg').addEventListener('click', () => onMessage(true));
 
         setInterval(() => {
             const f = k => (shown[k] === undefined ? '-' : shown[k].toFixed(2));
             moodNow.textContent = 'сейчас: ' + beh.mood.toFixed(2) + ', сообщений за минуту: ' + times.length +
-                '. Значения: хвост ' + f('tail') + ', уши ' + f('ears') + ', лапа ' + f('paw') + ', глаз ' + f('eyeL');
+                '. Значения: хвост ' + f('tail') + ', уши ' + f('ears') + ', лапа ' + f('paw') + ', глаз ' + f('eyeL') + ', взгляд ' + f('gazeX');
             if (!moodManual.checked) moodInput.value = beh.mood;
         }, 300);
 
