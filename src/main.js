@@ -12,9 +12,12 @@ const MODEL_URL = query.get('model') || './model/cat.model3.json';
 const FIXED_MOOD = query.has('mood') ? parseFloat(query.get('mood')) : null;
 const FULL_RATE = parseFloat(query.get('full')) > 0 ? parseFloat(query.get('full')) : 8;
 /* ?gaze=1      как часто кот смотрит на чат (1 = обычно, 2 = вдвое чаще, 0.5 = вдвое реже, 0 = не смотрит)
-   ?gazeTo=min  в какую сторону параметра ParamEyeBallX глаза смотрят на чат (min или max) */
+   ?gazeLook=-1 значение ParamEyeBallX, когда кот смотрит на чат
+   ?gazeRest=1  значение ParamEyeBallX, когда кот смотрит прямо */
 const GAZE = query.has('gaze') && Number.isFinite(parseFloat(query.get('gaze'))) ? Math.max(0, parseFloat(query.get('gaze'))) : 1;
-const GAZE_TO = query.get('gazeTo') === 'max' ? 1 : -1;
+const GAZE_LOOK = Number.isFinite(parseFloat(query.get('gazeLook'))) ? parseFloat(query.get('gazeLook')) : -1;   /* значение ParamEyeBallX, когда кот смотрит на чат */
+const GAZE_REST = Number.isFinite(parseFloat(query.get('gazeRest'))) ? parseFloat(query.get('gazeRest')) : 1;    /* значение, когда кот смотрит прямо */
+const BUILD = 'gaze-6';
 
 if (DEBUG) document.body.classList.add('debug', 'bg-check');
 
@@ -132,7 +135,7 @@ async function main() {
         console.error('live2dcubismcore.min.js не найден');
         return;
     }
-    log('Cubism Core найден.', 'ok');
+    log('Cubism Core найден. Версия кода кота: ' + BUILD, 'ok');
 
     if (DEBUG) {
         try { await checkFiles(); } catch (e) { log('Проверка файлов: ' + e.message, 'err'); }
@@ -231,7 +234,7 @@ async function main() {
         gaze: 0,
         gazeTarget: 0,
         gazeUntil: 0,
-        nextGaze: performance.now() + 8000,
+        nextGaze: performance.now() + 20000,
         lastGazeEnd: -1e9,
         droop: 0,
         pawPhase: 0
@@ -245,11 +248,11 @@ async function main() {
 
     /* взгляд на чат: в оживлённом чате кот время от времени переводит глаза на панель */
     const GAZE_MIN_MOOD = 0.45;
-    const gazeInterval = mood => lerp(55000, 18000, mood) * (0.7 + Math.random() * 0.6) / Math.max(GAZE, 0.01);
+    const gazeInterval = mood => lerp(110000, 40000, mood) * (0.7 + Math.random() * 0.6) / Math.max(GAZE, 0.01);
 
     const startGaze = now => {
         beh.gazeTarget = 1;
-        beh.gazeUntil = now + 2000 + Math.random() * 2200;
+        beh.gazeUntil = now + 1800 + Math.random() * 1700;
         if (Math.random() < 0.5) blinkNow();
     };
 
@@ -269,7 +272,7 @@ async function main() {
         else if (Math.random() < 0.15 && now - beh.lastPawAt > 8000) setTimeout(pawNow, 250);
 
         /* иногда кот реагирует взглядом на само сообщение */
-        if (!force && GAZE > 0 && beh.mood >= 0.5 && !beh.gazeTarget && now - beh.lastGazeEnd > 10000 && Math.random() < 0.08) {
+        if (!force && GAZE > 0 && beh.mood >= 0.5 && !beh.gazeTarget && now - beh.lastGazeEnd > 25000 && Math.random() < 0.03) {
             startGaze(now);
         }
     };
@@ -330,8 +333,8 @@ async function main() {
 
             beh.gaze += (beh.gazeTarget - beh.gaze) * Math.min(1, dt * (beh.gazeTarget ? 6 : 4));
 
-            const end = GAZE_TO > 0 ? r.max : r.min;
-            setKey('gazeX', r.def + (end - r.def) * beh.gaze);
+            /* прямо = GAZE_REST (1.0), на чат = GAZE_LOOK (-1.0) */
+            setKey('gazeX', GAZE_REST + (GAZE_LOOK - GAZE_REST) * beh.gaze);
         }
 
         /* уши: во сне отпускаются (ParamBrowLForm = EAR_DROOP), при пробуждении возвращаются в норму */
